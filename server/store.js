@@ -76,11 +76,11 @@ async function update(ref, patch) {
   const b = mem.bookings.find(x => x.ref === ref); if (!b) return null; Object.assign(b, patch); return clean(b);
 }
 async function pendingExpired(now) {
-  const rows = useDb ? await Booking.find({ status: "pending_payment", expiresAt: { $lt: now } }) : mem.bookings.filter(b => b.status === "pending_payment" && b.expiresAt && new Date(b.expiresAt) < now);
+  const rows = useDb ? await Booking.find({ status: { $in: ["pending_payment", "awaiting_approval"] }, expiresAt: { $lt: now } }) : mem.bookings.filter(b => ["pending_payment", "awaiting_approval"].includes(b.status) && b.expiresAt && new Date(b.expiresAt) < now);
   return rows.map(clean);
 }
 async function conflictsFor(rooms, ci, co) {
-  const act = ["confirmed", "pending_payment"];
+  const act = ["confirmed", "pending_payment", "awaiting_approval"];
   const rows = useDb ? await Booking.find({ room: { $in: rooms }, status: { $in: act }, checkIn: { $lt: co }, checkOut: { $gt: ci } })
     : mem.bookings.filter(b => rooms.includes(b.room) && act.includes(b.status) && b.checkIn < co && b.checkOut > ci);
   return rows.map(clean);

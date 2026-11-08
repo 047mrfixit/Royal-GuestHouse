@@ -7,7 +7,9 @@ const ROOMS = require("./rooms"), store = require("./store"), notify = require("
 const { ADMIN_PASSWORD, COOKIE_SECURE, GUESTHOUSE_PHONE, GUESTHOUSE_EMAIL, GUESTHOUSE_ADDRESS } = process.env;
 const SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
 const STRICT = process.env.STRICT_AFTER_LAST === "true";
-const SITE = { name: "Royal Guesthouse", phone: GUESTHOUSE_PHONE || "", email: GUESTHOUSE_EMAIL || "", address: GUESTHOUSE_ADDRESS || "", checkInTime: "14:00", checkOutTime: "11:00", strict: STRICT, payments: pay.info, tour: require("./media").tour };
+// When true, every booking is a REQUEST: the dates are held and the admin gets an email and approves or declines it on the Staff page.
+const APPROVAL = process.env.REQUIRE_APPROVAL === "true", APPROVAL_HOURS = parseFloat(process.env.APPROVAL_HOLD_HOURS) || 24;
+const SITE = { name: "Royal Guesthouse", phone: GUESTHOUSE_PHONE || "", email: GUESTHOUSE_EMAIL || "", address: GUESTHOUSE_ADDRESS || "", checkInTime: "14:00", checkOutTime: "11:00", strict: STRICT, payments: APPROVAL ? { ...pay.info, provider: "off" } : pay.info, approval: APPROVAL, tour: require("./media").tour };
 
 const app = express();
 app.use(helmet({ contentSecurityPolicy: { useDefaults: true, directives: { "upgrade-insecure-requests": null } } }));
@@ -24,6 +26,14 @@ const nightsOf = (ci, co) => { const out = []; for (let d = ci; d < co && out.le
 const makeRef = () => "RG-" + Array.from(crypto.randomBytes(6), b => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[b % 32]).join("");
 const nextFree = (booked, from) => { let d = from; for (const x of booked) { if (x < d) continue; if (x === d) d = store.addDays(d, 1); else break; } return d; };
 const strip = b => b && ({ ref: b.ref, room: b.room, roomName: b.roomName, checkIn: b.checkIn, checkOut: b.checkOut, nights: b.nights, guests: b.guests, total: b.total, name: b.name, email: b.email, phone: b.phone, notes: b.notes, status: b.status, paymentStatus: b.paymentStatus, paymentMethod: b.paymentMethod, expiresAt: b.expiresAt, room: b.room });
+
+// ---- booking approval ----
+async function decide(ref, a) {   // returns { b, done }; done=false when the booking was already handled
+  const b = await store.byRef(ref); if (!b) return { b: null };
+  if (b.status !== "awaiting_approval") return { b, done: false };
+  if (a === "approve") { const out = await store.update(ref, { status: "confirmed", expiresAt: null }); notify.send("approved", out, SITE); return { b: out, done: true }; }
+  const out = await store.cancel(ref); notify.send("declined", out, SITE); return { b: out, done: true };
+}
 
 app.get("/api/site", (req, res) => res.json(SITE));
 app.get("/api/rooms", wrap(async (req, res) => {
@@ -53,11 +63,11 @@ app.post("/api/bookings", limiter, wrap(async (req, res) => {
   if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: "Please enter a valid email address" });
   if (!/^[+\d][\d\s()-]{5,24}$/.test(phone)) return res.status(400).json({ error: "Please enter a valid phone number" });
   try {
-    const online = b.payMethod === "momo" && pay.info.provider !== "off";
+    const online = !APPROVAL && b.payMethod === "momo" && pay.info.provider !== "off";
     const saved = await store.create({ ref: makeRef(), room: room.id, roomName: room.name, checkIn: b.checkIn, checkOut: b.checkOut, nights: nights.length, guests,
-      total: nights.length * room.price, name, email, phone, notes: String(b.notes || "").slice(0, 500), status: online ? "pending_payment" : "confirmed", paymentStatus: "unpaid", paymentMethod: online ? "momo" : "arrival",
-      expiresAt: online ? new Date(Date.now() + pay.info.holdMinutes * 60000) : null, createdAt: new Date() }, nights, STRICT);
-    notify.send(online ? "pending" : "created", saved, SITE);
+      total: nights.length * room.price, name, email, phone, notes: String(b.notes || "").slice(0, 500), status: APPROVAL ? "awaiting_approval" : online ? "pending_payment" : "confirmed", paymentStatus: "unpaid", paymentMethod: online ? "momo" : "arrival",
+      expiresAt: APPROVAL ? new Date(Date.now() + APPROVAL_HOURS * 3600000) : online ? new Date(Date.now() + pay.info.holdMinutes * 60000) : null, createdAt: new Date() }, nights, STRICT);
+    notify.send(APPROVAL ? "request" : online ? "pending" : "created", saved, SITE);
     res.status(201).json(strip(saved));
   } catch (e) {
     if (e.code === "CONFLICT") return res.status(409).json({ error: "Sorry, this room is already booked for some of those dates. Please pick other dates." });
@@ -110,8 +120,8 @@ app.get("/api/bookings/:ref/payment", pollLimiter, wrap(async (req, res) => {
 // Unpaid online bookings release their dates after the hold time (unless the provider says they were paid)
 async function sweep() {
   for (const b of await store.pendingExpired(new Date())) {
-    if (b.providerRef && pay.auto) { const s = await pay.status(b.providerRef).catch(() => ""); if (s === "SUCCESSFUL") { await markPaid(b, "momo"); continue; } }
-    const out = await store.cancel(b.ref); if (out) notify.send("expired", out, SITE);
+    if (b.status === "pending_payment" && b.providerRef && pay.auto) { const s = await pay.status(b.providerRef).catch(() => ""); if (s === "SUCCESSFUL") { await markPaid(b, "momo"); continue; } }
+    const out = await store.cancel(b.ref); if (out) notify.send(b.status === "awaiting_approval" ? "lapsed" : "expired", out, SITE);
   }
 }
 setInterval(() => sweep().catch(e => console.error("Expiry sweep failed:", e.message)), (parseFloat(process.env.EXPIRY_CHECK_SECONDS) || 60) * 1000);
@@ -131,6 +141,12 @@ app.post("/api/admin/bookings/:ref/cancel", admin, wrap(async (req, res) => {
   const out = await store.cancel(req.params.ref); if (out) notify.send("cancelled", out, SITE); out ? res.json(strip(out)) : res.status(404).json({ error: "Booking not found or already cancelled" });
 }));
 
+app.post("/api/admin/bookings/:ref/:act(approve|decline)", admin, wrap(async (req, res) => {
+  const r = await decide(req.params.ref, req.params.act);
+  if (!r.b) return res.status(404).json({ error: "Booking not found" });
+  if (!r.done) return res.status(400).json({ error: "This booking is not waiting for approval" });
+  res.json(strip(r.b));
+}));
 app.post("/api/admin/bookings/:ref/paid", admin, wrap(async (req, res) => {
   const b = await store.byRef(req.params.ref);
   if (!b || b.status === "cancelled") return res.status(404).json({ error: "Booking not found" });
