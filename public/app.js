@@ -195,14 +195,14 @@ async function roomPage(id, q) {
   const sum = () => {
     $("#sum").innerHTML = ci && co ? `<div class="sum"><div class="row"><span>${fmt(ci)} → ${fmt(co)}</span></div><div class="row"><span>${nightsBetween(ci, co)} night(s) × ${money(r.price)}</span><span></span></div>
     <div class="row tot"><span>Total</span><span>${money(nightsBetween(ci, co) * r.price)}</span></div></div>` : "";
-    $("#go").disabled = !(ci && co); $("#go").textContent = ci && co ? "Confirm booking" : "Select your dates";
+    $("#go").disabled = !(ci && co); $("#go").textContent = ci && co ? (SITE.approval ? "Send booking request" : "Confirm booking") : "Select your dates";
   };
   const cal = calendar($("#cal"), booked, (a, b) => { ci = a; co = b; $("#err").textContent = ""; sum(); });
   cal.draw(); sum();
   const qi = q.get("in"), qo = q.get("out");
   if (qi && qo && qo > qi && qi >= TODAY) { let ok = true; for (let d = qi; d < qo; d = addDays(d, 1)) if (booked.includes(d)) ok = false; if (ok) cal.set(qi, qo); }
   $("#bf").onsubmit = async e => {
-    e.preventDefault(); const btn = $("#go"); const mail = $("#e").value; btn.disabled = true; btn.textContent = "Booking…"; $("#err").textContent = "";
+    e.preventDefault(); const btn = $("#go"); const mail = $("#e").value; btn.disabled = true; btn.textContent = SITE.approval ? "Sending…" : "Booking…"; $("#err").textContent = "";
     try {
       const b = await api("/bookings", { roomId: r.id, checkIn: ci, checkOut: co, guests: $("#g").value, name: $("#n").value, email: $("#e").value, phone: $("#p").value, notes: $("#no").value, payMethod: (document.querySelector("input[name=pm]:checked") || { value: "arrival" }).value });
       b.status === "pending_payment" ? paymentStep(b, mail) : confirmation(b);
@@ -214,15 +214,16 @@ async function roomPage(id, q) {
   };
 }
 
+const stLabel = b => ({ pending_payment: "awaiting payment", awaiting_approval: "awaiting confirmation" }[b.status] || b.status);
 const payBadge = b => b.status === "cancelled" ? (b.paymentStatus === "paid" ? `<span class="badge no">paid · refund needed</span>` : "") : b.paymentStatus === "paid" ? `<span class="badge ok">paid</span>` : b.status === "pending_payment" ? `<span class="badge info">awaiting payment</span>` : `<span class="badge info">pay on arrival</span>`;
 function confirmation(b) {
   history.replaceState(null, "", "#/booked");
-  app.innerHTML = `<div class="wrap"><div class="card pad center"><div style="font-size:3rem">✅</div><h1>Booking confirmed</h1><p class="mute">Thank you, ${esc(b.name.split(" ")[0])}! Your room is reserved. Please keep your reference:</p>
+  app.innerHTML = `<div class="wrap"><div class="card pad center">${b.status === "awaiting_approval" ? `<div style="font-size:3rem">⏳</div><h1>Request received</h1><p class="mute">Thank you, ${esc(b.name.split(" ")[0])}! We are checking your request and will confirm it shortly. The dates are held for you. Please keep your reference:</p>` : `<div style="font-size:3rem">✅</div><h1>Booking confirmed</h1><p class="mute">Thank you, ${esc(b.name.split(" ")[0])}! Your room is reserved. Please keep your reference:</p>`}
   <div class="ref">${esc(b.ref)}</div>
   <div class="sum" style="text-align:left"><div class="row"><span>Room</span><b>${esc(b.roomName)}</b></div><div class="row"><span>Check-in</span><b>${fmt(b.checkIn)} from ${SITE.checkInTime}</b></div>
   <div class="row"><span>Check-out</span><b>${fmt(b.checkOut)} by ${SITE.checkOutTime}</b></div><div class="row"><span>Guests</span><b>${b.guests}</b></div>
   <div class="row"><span>Payment</span><span>${payBadge(b)}</span></div><div class="row tot"><span>${b.paymentStatus === "paid" ? "Total paid" : "Total to pay on arrival"}</span><span>${money(b.total)}</span></div></div>
-  <p class="note">A confirmation was sent to ${esc(b.email)} and by SMS to ${esc(b.phone)}. Use your reference and email to view or cancel the booking. Questions? ${esc(SITE.phone)}</p>
+  <p class="note">${b.status === "awaiting_approval" ? "A message was sent" : "A confirmation was sent"} to ${esc(b.email)} and by SMS to ${esc(b.phone)}. Use your reference and email to view or cancel the booking. Questions? ${esc(SITE.phone)}</p>
   <div class="bar" style="justify-content:center"><a class="btn" href="#/manage">Manage my booking</a><a class="btn ghost" href="#/rooms">Back to rooms</a></div></div></div>`;
 }
 
@@ -254,7 +255,7 @@ async function paymentStep(b, email) {
 
 function bookingCard(b) {
   const canCancel = b.status !== "cancelled" && b.checkIn >= TODAY, canPay = b.status === "pending_payment" && SITE.payments.provider !== "off";
-  return `<div class="card pad" style="margin-top:18px"><div class="chips"><span class="badge ${b.status === "cancelled" ? "no" : b.status === "confirmed" ? "ok" : "info"}">${b.status === "pending_payment" ? "awaiting payment" : b.status}</span>${payBadge(b)}</div><h2>${esc(b.roomName)}</h2>
+  return `<div class="card pad" style="margin-top:18px"><div class="chips"><span class="badge ${b.status === "cancelled" ? "no" : b.status === "confirmed" ? "ok" : "info"}">${stLabel(b)}</span>${payBadge(b)}</div><h2>${esc(b.roomName)}</h2>
   <div class="sum"><div class="row"><span>Reference</span><b>${esc(b.ref)}</b></div><div class="row"><span>Guest</span><b>${esc(b.name)}</b></div><div class="row"><span>Check-in</span><b>${fmt(b.checkIn)}</b></div>
   <div class="row"><span>Check-out</span><b>${fmt(b.checkOut)}</b></div><div class="row"><span>Guests</span><b>${b.guests}</b></div><div class="row tot"><span>Total</span><span>${money(b.total)}</span></div></div>
   <div class="bar">${canPay ? `<button class="btn" id="pn">Pay now</button>` : ""}${canCancel ? `<button class="btn danger" id="cx">Cancel this booking</button>` : ""}</div><div class="err" id="cerr"></div></div>`;
@@ -297,9 +298,10 @@ async function adminPage(tab = "bookings") {
   const drawRows = () => {
     const list = rows.filter(b => f === "all" || (f === "upcoming" ? b.status !== "cancelled" && b.checkOut >= TODAY : b.status === "cancelled")).sort((a, b) => a.checkIn < b.checkIn ? -1 : 1);
     $("#tb").innerHTML = list.map(b => `<tr><td><b>${esc(b.ref)}</b></td><td>${esc(b.roomName)}</td><td>${b.checkIn} → ${b.checkOut}<br><span class="note">${b.nights} night(s)</span></td><td>${esc(b.name)}<br><span class="note">${esc(b.phone)} · ${esc(b.email)}</span></td>
-    <td>${money(b.total)}</td><td><span class="badge ${b.status === "cancelled" ? "no" : b.status === "confirmed" ? "ok" : "info"}">${b.status === "pending_payment" ? "awaiting payment" : b.status}</span></td><td>${payBadge(b)}</td>
-    <td style="white-space:nowrap">${b.status !== "cancelled" && b.paymentStatus !== "paid" ? `<button class="btn dark" data-p="${b.ref}" data-m="${b.paymentMethod}" style="padding:5px 12px">Mark paid</button> ` : ""}${b.status !== "cancelled" ? `<button class="btn danger" data-c="${b.ref}" style="padding:5px 12px">Cancel</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="8" class="mute">No bookings here yet.</td></tr>`;
+    <td>${money(b.total)}</td><td><span class="badge ${b.status === "cancelled" ? "no" : b.status === "confirmed" ? "ok" : "info"}">${stLabel(b)}</span></td><td>${payBadge(b)}</td>
+    <td style="white-space:nowrap">${b.status === "awaiting_approval" ? `<button class="btn dark" data-a="approve:${b.ref}" style="padding:5px 12px">Approve</button> <button class="btn danger" data-a="decline:${b.ref}" style="padding:5px 12px">Decline</button>` : b.status !== "cancelled" && b.paymentStatus !== "paid" ? `<button class="btn dark" data-p="${b.ref}" data-m="${b.paymentMethod}" style="padding:5px 12px">Mark paid</button> ` : ""}${b.status !== "cancelled" && b.status !== "awaiting_approval" ? `<button class="btn danger" data-c="${b.ref}" style="padding:5px 12px">Cancel</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="8" class="mute">No bookings here yet.</td></tr>`;
     document.querySelectorAll("[data-c]").forEach(b => b.onclick = async () => { if (!confirm("Cancel booking " + b.dataset.c + "? The guest will be notified.")) return; await api(`/admin/bookings/${b.dataset.c}/cancel`, {}); adminPage(tab); });
+    document.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => { const [a, ref] = b.dataset.a.split(":"); if (!confirm((a === "approve" ? "Approve " : "Decline ") + ref + "? The guest will be notified.")) return; await api(`/admin/bookings/${ref}/${a}`, {}); adminPage(tab); });
     document.querySelectorAll("[data-p]").forEach(b => b.onclick = async () => { await api(`/admin/bookings/${b.dataset.p}/paid`, { method: b.dataset.m === "momo" ? "momo" : "cash" }); adminPage(tab); });
     document.querySelectorAll("[data-f]").forEach(b => b.onclick = () => { f = b.dataset.f; document.querySelectorAll("[data-f]").forEach(x => x.className = "btn " + (x === b ? "dark" : "ghost")); drawRows(); });
   };
